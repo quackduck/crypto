@@ -26,6 +26,7 @@ func (c *connection) clientAuthenticate(config *ClientConfig) error {
 	if err := c.transport.writePacket(Marshal(&serviceRequestMsg{serviceUserAuth})); err != nil {
 		return err
 	}
+<<<<<<< HEAD
 	packet, err := c.transport.readPacket()
 	if err != nil {
 		return err
@@ -57,9 +58,33 @@ func (c *connection) clientAuthenticate(config *ClientConfig) error {
 			return err
 		}
 	}
+=======
+
+>>>>>>> add-rfc-8308
 	var serviceAccept serviceAcceptMsg
-	if err := Unmarshal(packet, &serviceAccept); err != nil {
-		return err
+readAcceptLoop:
+	for {
+		packet, err := c.transport.readPacket()
+		if err != nil {
+			return err
+		}
+
+		switch packet[0] {
+		case msgExtInfo:
+			var extInfo extInfoMsg
+			if err := Unmarshal(packet, &extInfo); err != nil {
+				return err
+			}
+			c.transport.extensions = extInfo.Extensions
+			continue
+		case msgServiceAccept:
+			if err := Unmarshal(packet, &serviceAccept); err != nil {
+				return err
+			}
+			break readAcceptLoop
+		default:
+			return fmt.Errorf("ssh: unexpected message received")
+		}
 	}
 
 	// during the authentication phase the client first attempts the "none" method
@@ -407,6 +432,14 @@ func handleAuthResponse(c packetConn) (authResult, []string, error) {
 		}
 
 		switch packet[0] {
+		case msgExtInfo:
+			var extInfo extInfoMsg
+			if err := Unmarshal(packet, &extInfo); err != nil {
+				return authFailure, nil, err
+			}
+			if transport, ok := c.(*handshakeTransport); ok {
+				transport.extensions = extInfo.Extensions
+			}
 		case msgUserAuthBanner:
 			if err := handleBannerResponse(c, packet); err != nil {
 				return authFailure, nil, err
@@ -497,6 +530,15 @@ func (cb KeyboardInteractiveChallenge) auth(session []byte, user string, c packe
 
 		// like handleAuthResponse, but with less options.
 		switch packet[0] {
+		case msgExtInfo:
+			var extInfo extInfoMsg
+			if err := Unmarshal(packet, &extInfo); err != nil {
+				return authFailure, nil, err
+			}
+			if transport, ok := c.(*handshakeTransport); ok {
+				transport.extensions = extInfo.Extensions
+			}
+			continue
 		case msgUserAuthBanner:
 			if err := handleBannerResponse(c, packet); err != nil {
 				return authFailure, nil, err

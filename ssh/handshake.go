@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -94,6 +95,16 @@ type handshakeTransport struct {
 
 	// The session ID or nil if first kex did not complete yet.
 	sessionID []byte
+
+	// True if the other side has signaled support for extensions.
+	extInfoSupported bool
+	// True if the first ext info message has been sent immediately following
+	// SSH_MSG_NEWKEYS, false otherwise.
+	extInfoSent bool
+
+	// extensions is a map of extensions received from the other side as
+	// part of extension negotiation.
+	extensions map[string][]byte
 }
 
 type pendingKex struct {
@@ -109,6 +120,7 @@ func newHandshakeTransport(conn keyingTransport, config *Config, clientVersion, 
 		incoming:      make(chan []byte, chanSize),
 		requestKex:    make(chan struct{}, 1),
 		startKex:      make(chan *pendingKex, 1),
+		extensions:    map[string][]byte{},
 
 		config: config,
 	}
@@ -474,8 +486,12 @@ func (t *handshakeTransport) sendKexInit() error {
 				msg.ServerHostKeyAlgos = append(msg.ServerHostKeyAlgos, keyFormat)
 			}
 		}
+		if hasString(ExtServerSigAlgs, t.config.Extensions) {
+			msg.KexAlgos = append(msg.KexAlgos, extInfoServer)
+		}
 	} else {
 		msg.ServerHostKeyAlgos = t.hostKeyAlgorithms
+<<<<<<< HEAD
 
 		// As a client we opt in to receiving SSH_MSG_EXT_INFO so we know what
 		// algorithms the server supports for public key authentication. See RFC
@@ -484,6 +500,10 @@ func (t *handshakeTransport) sendKexInit() error {
 			msg.KexAlgos = make([]string, 0, len(t.config.KeyExchanges)+1)
 			msg.KexAlgos = append(msg.KexAlgos, t.config.KeyExchanges...)
 			msg.KexAlgos = append(msg.KexAlgos, "ext-info-c")
+=======
+		if hasString(ExtServerSigAlgs, t.config.Extensions) {
+			msg.KexAlgos = append(msg.KexAlgos, extInfoClient)
+>>>>>>> add-rfc-8308
 		}
 	}
 
@@ -630,6 +650,36 @@ func (t *handshakeTransport) enterKeyExchange(otherInitPacket []byte) error {
 		return err
 	} else if packet[0] != msgNewKeys {
 		return unexpectedMessageError(msgNewKeys, packet[0])
+	}
+
+	// Handle the ext-info-X extension signal from RFC8308 section 2.
+	// First, see if the other side supports us sending SSH_MSG_EXT_INFO to them.
+	if isClient {
+		// We're on the client side, see if the server sent the extension signal
+		t.extInfoSupported = hasString(extInfoServer, serverInit.KexAlgos)
+	} else {
+		// We're on the server side, see if the client sent the extension signal
+		t.extInfoSupported = hasString(extInfoClient, clientInit.KexAlgos)
+	}
+	if t.extInfoSupported && !t.extInfoSent && len(t.config.Extensions) > 0 {
+		// The other side supports ext info, an ext info message hasn't been sent this session,
+		// and we have at least one extension enabled, so send an SSH_MSG_EXT_INFO message.
+		extensions := map[string][]byte{}
+		if !isClient {
+			if hasString(ExtServerSigAlgs, t.config.Extensions) {
+				// We're the server, the client supports SSH_MSG_EXT_INFO and server-sig-algs
+				// is enabled. Prepare the server-sig-algos extension message to send.
+				extensions[ExtServerSigAlgs] = []byte(strings.Join(supportedSigAlgs(), ","))
+			}
+		}
+		extInfo := extInfoMsg{
+			NumExtensions: uint32(len(extensions)),
+			Extensions:    extensions,
+		}
+		if err := t.conn.writePacket(Marshal(&extInfo)); err != nil {
+			return err
+		}
+		t.extInfoSent = true
 	}
 
 	return nil
